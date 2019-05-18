@@ -17,6 +17,12 @@ script:
   - /usr/local/opt/qt/bin/qmake .. && make -j8
   - /usr/local/opt/qt/bin/macdeployqt chatterino.app -dmg
 
+before_deploy:
+  - git config --global user.email "builds@travis-ci.com"
+  - git config --global user.name "Travis CI"
+  - export GIT_TAG=nightly
+  - git tag $GIT_TAG
+
 deploy:
   skip_cleanup: true
   provider: releases
