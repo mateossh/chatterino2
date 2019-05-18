@@ -21,7 +21,7 @@ deploy:
   skip_cleanup: true
   provider: releases
   api_key:
-      secure: $SECURE_GITHUB_KEY
+      secure: "$SECURE_GITHUB_KEY"
   file: "chatterino2.dmg"
   prerelease: true
   on:
