@@ -22,7 +22,7 @@ before_deploy:
   - git config --global user.name "Travis CI"
   - export GIT_TAG=nightly-mac-0.$TRAVIS_BUILD_NUMBER
   - git tag $GIT_TAG -a -m "Nightly last change - $TRAVIS_COMMIT_MESSAGE"
-  - git push -q https://$GITHUB_KEY@github.com/fourtf/chatterino2 --tags
+  - git push --tags
   - ls -R
 
 deploy:
