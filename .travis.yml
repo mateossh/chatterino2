@@ -15,7 +15,7 @@ compiler: clang
 script:
   - mkdir build && cd build
   - /usr/local/opt/qt/bin/qmake .. && make -j8
-  - 7z a chatterino2.zip chatterino.app
+  - macdeployqt chatterino.app -dmg
 
 before_deploy:
   - git config --global user.email "builds@travis-ci.com"
@@ -29,8 +29,8 @@ deploy:
   skip_cleanup: true
   provider: releases
   api_key: $GITHUB_KEY
-  file: "chatterino2.zip"
+  file: "chatterino2.dmg"
   prerelease: true
   on:
     tags: false
-    branch: nightly
+    branch: osx-ci-test
