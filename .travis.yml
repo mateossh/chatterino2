@@ -15,7 +15,7 @@ compiler: clang
 script:
   - mkdir build && cd build
   - /usr/local/opt/qt/bin/qmake .. && make -j8
-  - macdeployqt chatterino.app -dmg
+  - /usr/local/opt/qt/bin/macdeployqt chatterino.app -dmg
 
 before_deploy:
   - git config --global user.email "builds@travis-ci.com"
