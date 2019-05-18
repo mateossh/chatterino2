@@ -25,5 +25,4 @@ deploy:
   file: "chatterino2.dmg"
   prerelease: true
   on:
-    tags: false
     branch: osx-ci-test
