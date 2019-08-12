@@ -170,6 +170,9 @@ void GeneralPage::initLayout(SettingsLayout &layout)
         },
         [](auto args) { return fuzzyToFloat(args.value, 1.f); });
     layout.addCheckbox("Always on top", s.windowTopMost);
+#ifdef USEWINSDK
+    layout.addCheckbox("Start with Windows", s.autorun);
+#endif
 
     layout.addTitle("Interface");
     layout.addDropdown<float>(
@@ -214,6 +217,11 @@ void GeneralPage::initLayout(SettingsLayout &layout)
     // layout.addDropdown("Last read message style", {"Default"});
     layout.addCheckbox("Hide moderated messages", s.hideModerated);
     layout.addCheckbox("Hide moderation messages", s.hideModerationActions);
+    layout.addCheckbox("Colorize gray nicknames", s.colorizeNicknames);
+    layout.addDropdown<int>(
+        "Timeout stacking style", {"Stack", "Stack sparingly"},
+        s.timeoutStackStyle, [](int index) { return index; },
+        [](auto args) { return args.index; }, false);
 
     layout.addTitle("Emotes");
     layout.addDropdown<float>(
@@ -258,24 +266,23 @@ void GeneralPage::initLayout(SettingsLayout &layout)
     layout.addCheckbox("Lowercase domains", s.lowercaseDomains);
     layout.addCheckbox("Bold @usernames", s.boldUsernames);
     layout.addDropdown<float>(
-        "Username font weight", {"0", "25", "Default", "75", "100"},
-        s.boldScale,
+        "Username font weight", {"50", "Default", "75", "100"}, s.boldScale,
         [](auto val) {
-            if (val == 50)
+            if (val == 63)
                 return QString("Default");
             else
                 return QString::number(val);
         },
-        [](auto args) { return fuzzyToFloat(args.value, 50.f); });
+        [](auto args) { return fuzzyToFloat(args.value, 63.f); });
     layout.addCheckbox("Show link info when hovering", s.linkInfoTooltip);
     layout.addCheckbox("Double click links to open", s.linksDoubleClickOnly);
     layout.addCheckbox("Unshorten links", s.unshortLinks);
     layout.addCheckbox("Show live indicator in tabs", s.showTabLive);
-    layout.addDropdown<int>("Show emote preview in tooltip on hover",
-                            {"Don't show", "Always show", "Hold shift"},
-                            s.emotesTooltipPreview,
-                            [](int index) { return index; },
-                            [](auto args) { return args.index; }, false);
+    layout.addDropdown<int>(
+        "Show emote preview in tooltip on hover",
+        {"Don't show", "Always show", "Hold shift"}, s.emotesTooltipPreview,
+        [](int index) { return index; }, [](auto args) { return args.index; },
+        false);
 
     layout.addSpacing(16);
     layout.addSeperator();

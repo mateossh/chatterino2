@@ -20,10 +20,48 @@
 #include "widgets/Window.hpp"
 
 #include <QApplication>
+#include <QColor>
 #include <QDebug>
 #include <QMediaPlayer>
 #include <QStringRef>
 #include <boost/variant.hpp>
+
+namespace {
+
+QColor getRandomColor(const QVariant &userId)
+{
+    static const std::vector<QColor> twitchUsernameColors = {
+        {255, 0, 0},      // Red
+        {0, 0, 255},      // Blue
+        {0, 255, 0},      // Green
+        {178, 34, 34},    // FireBrick
+        {255, 127, 80},   // Coral
+        {154, 205, 50},   // YellowGreen
+        {255, 69, 0},     // OrangeRed
+        {46, 139, 87},    // SeaGreen
+        {218, 165, 32},   // GoldenRod
+        {210, 105, 30},   // Chocolate
+        {95, 158, 160},   // CadetBlue
+        {30, 144, 255},   // DodgerBlue
+        {255, 105, 180},  // HotPink
+        {138, 43, 226},   // BlueViolet
+        {0, 255, 127},    // SpringGreen
+    };
+
+    bool ok = true;
+    int colorSeed = userId.toInt(&ok);
+    if (!ok)
+    {
+        // We were unable to convert the user ID to an integer, this means Twitch has decided to start using non-integer user IDs
+        // Just randomize the users color
+        colorSeed = std::rand();
+    }
+
+    const auto colorIndex = colorSeed % twitchUsernameColors.size();
+    return twitchUsernameColors[colorIndex];
+}
+
+}  // namespace
 
 namespace chatterino {
 
@@ -60,7 +98,7 @@ bool TwitchMessageBuilder::isIgnored() const
     auto app = getApp();
 
     // TODO(pajlada): Do we need to check if the phrase is valid first?
-    for (const auto &phrase : app->ignores->phrases.getVector())
+    for (const auto &phrase : app->ignores->phrases)
     {
         if (phrase.isBlock() && phrase.isMatch(this->originalMessage_))
         {
@@ -92,6 +130,8 @@ bool TwitchMessageBuilder::isIgnored() const
                         if (this->channel->isBroadcaster())
                             return false;
                         break;
+                    case ShowIgnoredUsersMessages::Never:
+                        break;
                 }
                 log("Blocking message because it's from blocked user {}",
                     user.name);
@@ -101,6 +141,51 @@ bool TwitchMessageBuilder::isIgnored() const
     }
 
     return false;
+}
+
+void TwitchMessageBuilder::triggerHighlights()
+{
+    static auto player = new QMediaPlayer;
+    static QUrl currentPlayerUrl;
+
+    if (this->historicalMessage_)
+    {
+        // Do nothing. Highlights should not be triggered on historical messages.
+        return;
+    }
+
+    if (getApp()->pings->isMuted(this->channel->getName()))
+    {
+        // Do nothing. Pings are muted in this channel.
+        return;
+    }
+
+    bool hasFocus = (QApplication::focusWidget() != nullptr);
+    bool resolveFocus = !hasFocus || getSettings()->highlightAlwaysPlaySound;
+
+    if (this->highlightSound_ && resolveFocus)
+    {
+        // update the media player url if necessary
+        QUrl highlightSoundUrl =
+            getSettings()->customHighlightSound
+                ? QUrl::fromLocalFile(
+                      getSettings()->pathHighlightSound.getValue())
+                : QUrl("qrc:/sounds/ping2.wav");
+
+        if (currentPlayerUrl != highlightSoundUrl)
+        {
+            player->setMedia(highlightSoundUrl);
+
+            currentPlayerUrl = highlightSoundUrl;
+        }
+
+        player->play();
+    }
+
+    if (this->highlightAlert_)
+    {
+        getApp()->windows->sendAlert();
+    }
 }
 
 MessagePtr TwitchMessageBuilder::build()
@@ -127,9 +212,10 @@ MessagePtr TwitchMessageBuilder::build()
         this->message().flags.set(MessageFlag::Disabled);
     }
 
+    this->historicalMessage_ = this->tags.contains("historical");
+
     // timestamp
-    bool isPastMsg = this->tags.contains("historical");
-    if (isPastMsg)
+    if (this->historicalMessage_)
     {
         // This may be architecture dependent(datatype)
         bool customReceived = false;
@@ -181,15 +267,6 @@ MessagePtr TwitchMessageBuilder::build()
 
     this->appendUsername();
 
-    // highlights
-    this->parseHighlights(isPastMsg);
-
-    // highlighting incoming whispers if requested per setting
-    if (this->args.isReceivedWhisper && getSettings()->highlightInlineWhispers)
-    {
-        this->message().flags.set(MessageFlag::HighlightedWhisper, true);
-    }
-
     //    QString bits;
     auto iterator = this->tags.find("bits");
     if (iterator != this->tags.end())
@@ -218,8 +295,386 @@ MessagePtr TwitchMessageBuilder::build()
             this->appendTwitchEmote(emote, twitchEmotes, correctPositions);
         }
     }
+
+    // This runs through all ignored phrases and runs its replacements on this->originalMessage_
+    this->runIgnoreReplaces(twitchEmotes);
+
+    std::sort(twitchEmotes.begin(), twitchEmotes.end(),
+              [](const auto &a, const auto &b) {
+                  return std::get<0>(a) < std::get<0>(b);
+              });
+    twitchEmotes.erase(std::unique(twitchEmotes.begin(), twitchEmotes.end(),
+                                   [](const auto &first, const auto &second) {
+                                       return std::get<0>(first) ==
+                                              std::get<0>(second);
+                                   }),
+                       twitchEmotes.end());
+
+    // words
+    QStringList splits = this->originalMessage_.split(' ');
+
+    this->addWords(splits, twitchEmotes);
+
+    this->message().messageText = this->originalMessage_;
+    this->message().searchText = this->message().localizedName + " " +
+                                 this->userName + ": " + this->originalMessage_;
+
+    // highlights
+    this->parseHighlights();
+
+    // highlighting incoming whispers if requested per setting
+    if (this->args.isReceivedWhisper && getSettings()->highlightInlineWhispers)
+    {
+        this->message().flags.set(MessageFlag::HighlightedWhisper, true);
+    }
+
+    return this->release();
+}
+
+void TwitchMessageBuilder::addWords(
+    const QStringList &words,
+    const std::vector<std::tuple<int, EmotePtr, EmoteName>> &twitchEmotes)
+{
+    auto i = int();
+    auto currentTwitchEmote = twitchEmotes.begin();
+
+    for (const auto &word : words)
+    {
+        // check if it's a twitch emote twitch emote
+        while (currentTwitchEmote != twitchEmotes.end() &&
+               std::get<0>(*currentTwitchEmote) < i)
+        {
+            ++currentTwitchEmote;
+        }
+        if (currentTwitchEmote != twitchEmotes.end() &&
+            std::get<0>(*currentTwitchEmote) == i)
+        {
+            auto emoteImage = std::get<1>(*currentTwitchEmote);
+            if (emoteImage == nullptr)
+            {
+                log("emoteImage nullptr {}",
+                    std::get<2>(*currentTwitchEmote).string);
+            }
+            this->emplace<EmoteElement>(emoteImage,
+                                        MessageElementFlag::TwitchEmote);
+
+            i += word.length() + 1;
+            currentTwitchEmote++;
+
+            continue;
+        }
+
+        // split words
+        for (auto &variant : getApp()->emotes->emojis.parse(word))
+        {
+            boost::apply_visitor([&](auto &&arg) { this->addTextOrEmoji(arg); },
+                                 variant);
+        }
+
+        i += word.size() + 1;
+    }
+}
+
+void TwitchMessageBuilder::addTextOrEmoji(EmotePtr emote)
+{
+    this->emplace<EmoteElement>(emote, MessageElementFlag::EmojiAll);
+}
+
+void TwitchMessageBuilder::addTextOrEmoji(const QString &string_)
+{
+    auto string = QString(string_);
+
+    if (this->hasBits_ && this->tryParseCheermote(string))
+    {
+        // This string was parsed as a cheermote
+        return;
+    }
+
+    // TODO: Implement ignored emotes
+    // Format of ignored emotes:
+    // Emote name: "forsenPuke" - if string in ignoredEmotes
+    // Will match emote regardless of source (i.e. bttv, ffz)
+    // Emote source + name: "bttv:nyanPls"
+    if (this->tryAppendEmote({string}))
+    {
+        // Successfully appended an emote
+        return;
+    }
+
+    // Actually just text
+    auto linkString = this->matchLink(string);
+    auto link = Link();
+    auto textColor = this->action_ ? MessageColor(this->usernameColor_)
+                                   : MessageColor(MessageColor::Text);
+
+    if (linkString.isEmpty())
+    {
+        if (string.startsWith('@'))
+        {
+            this->emplace<TextElement>(string, MessageElementFlag::BoldUsername,
+                                       textColor, FontStyle::ChatMediumBold);
+            this->emplace<TextElement>(
+                string, MessageElementFlag::NonBoldUsername, textColor);
+        }
+        else
+        {
+            this->emplace<TextElement>(string, MessageElementFlag::Text,
+                                       textColor);
+        }
+    }
+    else
+    {
+        this->addLink(string, linkString);
+    }
+
+    // if (!linkString.isEmpty()) {
+    //    if (getSettings()->lowercaseLink) {
+    //        QRegularExpression httpRegex("\\bhttps?://",
+    //        QRegularExpression::CaseInsensitiveOption); QRegularExpression
+    //        ftpRegex("\\bftps?://",
+    //        QRegularExpression::CaseInsensitiveOption); QRegularExpression
+    //        getDomain("\\/\\/([^\\/]*)"); QString tempString = string;
+
+    //        if (!string.contains(httpRegex)) {
+    //            if (!string.contains(ftpRegex)) {
+    //                tempString.insert(0, "http://");
+    //            }
+    //        }
+    //        QString domain = getDomain.match(tempString).captured(1);
+    //        string.replace(domain, domain.toLower());
+    //    }
+    //    link = Link(Link::Url, linkString);
+    //    textColor = MessageColor(MessageColor::Link);
+    //}
+    // if (string.startsWith('@')) {
+    //    this->emplace<TextElement>(string, MessageElementFlag::BoldUsername,
+    //    textColor,
+    //                               FontStyle::ChatMediumBold)  //
+    //        ->setLink(link);
+    //    this->emplace<TextElement>(string,
+    //    MessageElementFlag::NonBoldUsername,
+    //                               textColor)  //
+    //        ->setLink(link);
+    //} else {
+    //    this->emplace<TextElement>(string, MessageElementFlag::Text,
+    //    textColor)  //
+    //        ->setLink(link);
+    //}
+}
+
+void TwitchMessageBuilder::parseMessageID()
+{
+    auto iterator = this->tags.find("id");
+
+    if (iterator != this->tags.end())
+    {
+        this->message().id = iterator.value().toString();
+    }
+}
+
+void TwitchMessageBuilder::parseRoomID()
+{
+    if (this->twitchChannel == nullptr)
+    {
+        return;
+    }
+
+    auto iterator = this->tags.find("room-id");
+
+    if (iterator != std::end(this->tags))
+    {
+        this->roomID_ = iterator.value().toString();
+
+        if (this->twitchChannel->roomId().isEmpty())
+        {
+            this->twitchChannel->setRoomId(this->roomID_);
+        }
+    }
+}
+
+void TwitchMessageBuilder::appendChannelName()
+{
+    QString channelName("#" + this->channel->getName());
+    Link link(Link::Url, this->channel->getName() + "\n" + this->message().id);
+
+    this->emplace<TextElement>(channelName, MessageElementFlag::ChannelName,
+                               MessageColor::System)  //
+        ->setLink(link);
+}
+
+void TwitchMessageBuilder::parseUsernameColor()
+{
+    const auto iterator = this->tags.find("color");
+    if (iterator != this->tags.end())
+    {
+        if (const auto color = iterator.value().toString(); !color.isEmpty())
+        {
+            this->usernameColor_ = QColor(color);
+            return;
+        }
+    }
+
+    if (getSettings()->colorizeNicknames && this->tags.contains("user-id"))
+    {
+        this->usernameColor_ = getRandomColor(this->tags.value("user-id"));
+    }
+}
+
+void TwitchMessageBuilder::parseUsername()
+{
+    this->parseUsernameColor();
+
+    // username
+    this->userName = this->ircMessage->nick();
+
+    if (this->userName.isEmpty() || this->args.trimSubscriberUsername)
+    {
+        this->userName = this->tags.value(QLatin1String("login")).toString();
+    }
+
+    // display name
+    //    auto displayNameVariant = this->tags.value("display-name");
+    //    if (displayNameVariant.isValid()) {
+    //        this->userName = displayNameVariant.toString() + " (" +
+    //        this->userName + ")";
+    //    }
+
+    this->message().loginName = this->userName;
+
+    // Update current user color if this is our message
+    auto currentUser = getApp()->accounts->twitch.getCurrent();
+    if (this->ircMessage->nick() == currentUser->getUserName())
+    {
+        currentUser->setColor(this->usernameColor_);
+    }
+}
+
+void TwitchMessageBuilder::appendUsername()
+{
     auto app = getApp();
-    const auto &phrases = app->ignores->phrases.getVector();
+
+    QString username = this->userName;
+    this->message().loginName = username;
+    QString localizedName;
+
+    auto iterator = this->tags.find("display-name");
+    if (iterator != this->tags.end())
+    {
+        QString displayName =
+            parseTagString(iterator.value().toString()).trimmed();
+
+        if (QString::compare(displayName, this->userName,
+                             Qt::CaseInsensitive) == 0)
+        {
+            username = displayName;
+
+            this->message().displayName = displayName;
+        }
+        else
+        {
+            localizedName = displayName;
+
+            this->message().displayName = username;
+            this->message().localizedName = displayName;
+        }
+    }
+
+    bool hasLocalizedName = !localizedName.isEmpty();
+
+    // The full string that will be rendered in the chat widget
+    QString usernameText;
+
+    pajlada::Settings::Setting<int> usernameDisplayMode(
+        "/appearance/messages/usernameDisplayMode",
+        UsernameDisplayMode::UsernameAndLocalizedName);
+
+    switch (usernameDisplayMode.getValue())
+    {
+        case UsernameDisplayMode::Username:
+        {
+            usernameText = username;
+        }
+        break;
+
+        case UsernameDisplayMode::LocalizedName:
+        {
+            if (hasLocalizedName)
+            {
+                usernameText = localizedName;
+            }
+            else
+            {
+                usernameText = username;
+            }
+        }
+        break;
+
+        default:
+        case UsernameDisplayMode::UsernameAndLocalizedName:
+        {
+            if (hasLocalizedName)
+            {
+                usernameText = username + "(" + localizedName + ")";
+            }
+            else
+            {
+                usernameText = username;
+            }
+        }
+        break;
+    }
+
+    if (this->args.isSentWhisper)
+    {
+        // TODO(pajlada): Re-implement
+        // userDisplayString +=
+        // IrcManager::getInstance().getUser().getUserName();
+    }
+    else if (this->args.isReceivedWhisper)
+    {
+        // Sender username
+        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
+                                   this->usernameColor_,
+                                   FontStyle::ChatMediumBold)
+            ->setLink({Link::UserWhisper, this->message().displayName});
+
+        auto currentUser = app->accounts->twitch.getCurrent();
+
+        // Separator
+        this->emplace<TextElement>("->", MessageElementFlag::Username,
+                                   app->themes->messages.textColors.system,
+                                   FontStyle::ChatMedium);
+
+        QColor selfColor = currentUser->color();
+        if (!selfColor.isValid())
+        {
+            selfColor = app->themes->messages.textColors.system;
+        }
+
+        // Your own username
+        this->emplace<TextElement>(currentUser->getUserName() + ":",
+                                   MessageElementFlag::Username, selfColor,
+                                   FontStyle::ChatMediumBold);
+    }
+    else
+    {
+        if (!this->action_)
+        {
+            usernameText += ":";
+        }
+
+        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
+                                   this->usernameColor_,
+                                   FontStyle::ChatMediumBold)
+            ->setLink({Link::UserInfo, this->message().displayName});
+    }
+}
+
+void TwitchMessageBuilder::runIgnoreReplaces(
+    std::vector<std::tuple<int, EmotePtr, EmoteName>> &twitchEmotes)
+{
+    auto app = getApp();
+    const auto &phrases = app->ignores->phrases;
     auto removeEmotesInRange =
         [](int pos, int len,
            std::vector<std::tuple<int, EmotePtr, EmoteName>>
@@ -428,385 +883,68 @@ MessagePtr TwitchMessageBuilder::build()
             }
         }
     }
-
-    std::sort(twitchEmotes.begin(), twitchEmotes.end(),
-              [](const auto &a, const auto &b) {
-                  return std::get<0>(a) < std::get<0>(b);
-              });
-    twitchEmotes.erase(std::unique(twitchEmotes.begin(), twitchEmotes.end(),
-                                   [](const auto &first, const auto &second) {
-                                       return std::get<0>(first) ==
-                                              std::get<0>(second);
-                                   }),
-                       twitchEmotes.end());
-
-    // words
-    QStringList splits = this->originalMessage_.split(' ');
-
-    this->addWords(splits, twitchEmotes);
-
-    this->message().messageText = this->originalMessage_;
-    this->message().searchText = this->message().localizedName + " " +
-                                 this->userName + ": " + this->originalMessage_;
-
-    return this->release();
 }
 
-void TwitchMessageBuilder::addWords(
-    const QStringList &words,
-    const std::vector<std::tuple<int, EmotePtr, EmoteName>> &twitchEmotes)
+void TwitchMessageBuilder::parseHighlights()
 {
-    auto i = int();
-    auto currentTwitchEmote = twitchEmotes.begin();
-
-    for (const auto &word : words)
-    {
-        // check if it's a twitch emote twitch emote
-        while (currentTwitchEmote != twitchEmotes.end() &&
-               std::get<0>(*currentTwitchEmote) < i)
-        {
-            ++currentTwitchEmote;
-        }
-        if (currentTwitchEmote != twitchEmotes.end() &&
-            std::get<0>(*currentTwitchEmote) == i)
-        {
-            auto emoteImage = std::get<1>(*currentTwitchEmote);
-            if (emoteImage == nullptr)
-            {
-                log("emoteImage nullptr {}",
-                    std::get<2>(*currentTwitchEmote).string);
-            }
-            this->emplace<EmoteElement>(emoteImage,
-                                        MessageElementFlag::TwitchEmote);
-
-            i += word.length() + 1;
-            currentTwitchEmote++;
-
-            continue;
-        }
-
-        // split words
-        for (auto &variant : getApp()->emotes->emojis.parse(word))
-        {
-            boost::apply_visitor([&](auto &&arg) { this->addTextOrEmoji(arg); },
-                                 variant);
-        }
-
-        i += word.size() + 1;
-    }
-}
-
-void TwitchMessageBuilder::addTextOrEmoji(EmotePtr emote)
-{
-    this->emplace<EmoteElement>(emote, MessageElementFlag::EmojiAll);
-}
-
-void TwitchMessageBuilder::addTextOrEmoji(const QString &string_)
-{
-    auto string = QString(string_);
-
-    if (this->hasBits_ && this->tryParseCheermote(string))
-    {
-        // This string was parsed as a cheermote
-        return;
-    }
-
-    // TODO: Implement ignored emotes
-    // Format of ignored emotes:
-    // Emote name: "forsenPuke" - if string in ignoredEmotes
-    // Will match emote regardless of source (i.e. bttv, ffz)
-    // Emote source + name: "bttv:nyanPls"
-    if (this->tryAppendEmote({string}))
-    {
-        // Successfully appended an emote
-        return;
-    }
-
-    // Actually just text
-    auto linkString = this->matchLink(string);
-    auto link = Link();
-    auto textColor = this->action_ ? MessageColor(this->usernameColor_)
-                                   : MessageColor(MessageColor::Text);
-
-    if (linkString.isEmpty())
-    {
-        if (string.startsWith('@'))
-        {
-            this->emplace<TextElement>(string, MessageElementFlag::BoldUsername,
-                                       textColor, FontStyle::ChatMediumBold);
-            this->emplace<TextElement>(
-                string, MessageElementFlag::NonBoldUsername, textColor);
-        }
-        else
-        {
-            this->emplace<TextElement>(string, MessageElementFlag::Text,
-                                       textColor);
-        }
-    }
-    else
-    {
-        this->addLink(string, linkString);
-    }
-
-    // if (!linkString.isEmpty()) {
-    //    if (getSettings()->lowercaseLink) {
-    //        QRegularExpression httpRegex("\\bhttps?://",
-    //        QRegularExpression::CaseInsensitiveOption); QRegularExpression
-    //        ftpRegex("\\bftps?://",
-    //        QRegularExpression::CaseInsensitiveOption); QRegularExpression
-    //        getDomain("\\/\\/([^\\/]*)"); QString tempString = string;
-
-    //        if (!string.contains(httpRegex)) {
-    //            if (!string.contains(ftpRegex)) {
-    //                tempString.insert(0, "http://");
-    //            }
-    //        }
-    //        QString domain = getDomain.match(tempString).captured(1);
-    //        string.replace(domain, domain.toLower());
-    //    }
-    //    link = Link(Link::Url, linkString);
-    //    textColor = MessageColor(MessageColor::Link);
-    //}
-    // if (string.startsWith('@')) {
-    //    this->emplace<TextElement>(string, MessageElementFlag::BoldUsername,
-    //    textColor,
-    //                               FontStyle::ChatMediumBold)  //
-    //        ->setLink(link);
-    //    this->emplace<TextElement>(string,
-    //    MessageElementFlag::NonBoldUsername,
-    //                               textColor)  //
-    //        ->setLink(link);
-    //} else {
-    //    this->emplace<TextElement>(string, MessageElementFlag::Text,
-    //    textColor)  //
-    //        ->setLink(link);
-    //}
-}
-
-void TwitchMessageBuilder::parseMessageID()
-{
-    auto iterator = this->tags.find("id");
-
-    if (iterator != this->tags.end())
-    {
-        this->message().id = iterator.value().toString();
-    }
-}
-
-void TwitchMessageBuilder::parseRoomID()
-{
-    if (this->twitchChannel == nullptr)
-    {
-        return;
-    }
-
-    auto iterator = this->tags.find("room-id");
-
-    if (iterator != std::end(this->tags))
-    {
-        this->roomID_ = iterator.value().toString();
-
-        if (this->twitchChannel->roomId().isEmpty())
-        {
-            this->twitchChannel->setRoomId(this->roomID_);
-        }
-    }
-}
-
-void TwitchMessageBuilder::appendChannelName()
-{
-    QString channelName("#" + this->channel->getName());
-    Link link(Link::Url, this->channel->getName() + "\n" + this->message().id);
-
-    this->emplace<TextElement>(channelName, MessageElementFlag::ChannelName,
-                               MessageColor::System)  //
-        ->setLink(link);
-}
-
-void TwitchMessageBuilder::parseUsername()
-{
-    auto iterator = this->tags.find("color");
-    if (iterator != this->tags.end())
-    {
-        this->usernameColor_ = QColor(iterator.value().toString());
-    }
-
-    // username
-    this->userName = this->ircMessage->nick();
-
-    if (this->userName.isEmpty() || this->args.trimSubscriberUsername)
-    {
-        this->userName = this->tags.value(QLatin1String("login")).toString();
-    }
-
-    // display name
-    //    auto displayNameVariant = this->tags.value("display-name");
-    //    if (displayNameVariant.isValid()) {
-    //        this->userName = displayNameVariant.toString() + " (" +
-    //        this->userName + ")";
-    //    }
-
-    this->message().loginName = this->userName;
-}
-
-void TwitchMessageBuilder::appendUsername()
-{
-    auto app = getApp();
-
-    QString username = this->userName;
-    this->message().loginName = username;
-    QString localizedName;
-
-    auto iterator = this->tags.find("display-name");
-    if (iterator != this->tags.end())
-    {
-        QString displayName =
-            parseTagString(iterator.value().toString()).trimmed();
-
-        if (QString::compare(displayName, this->userName,
-                             Qt::CaseInsensitive) == 0)
-        {
-            username = displayName;
-
-            this->message().displayName = displayName;
-        }
-        else
-        {
-            localizedName = displayName;
-
-            this->message().displayName = username;
-            this->message().localizedName = displayName;
-        }
-    }
-
-    bool hasLocalizedName = !localizedName.isEmpty();
-
-    // The full string that will be rendered in the chat widget
-    QString usernameText;
-
-    pajlada::Settings::Setting<int> usernameDisplayMode(
-        "/appearance/messages/usernameDisplayMode",
-        UsernameDisplayMode::UsernameAndLocalizedName);
-
-    switch (usernameDisplayMode.getValue())
-    {
-        case UsernameDisplayMode::Username:
-        {
-            usernameText = username;
-        }
-        break;
-
-        case UsernameDisplayMode::LocalizedName:
-        {
-            if (hasLocalizedName)
-            {
-                usernameText = localizedName;
-            }
-            else
-            {
-                usernameText = username;
-            }
-        }
-        break;
-
-        default:
-        case UsernameDisplayMode::UsernameAndLocalizedName:
-        {
-            if (hasLocalizedName)
-            {
-                usernameText = username + "(" + localizedName + ")";
-            }
-            else
-            {
-                usernameText = username;
-            }
-        }
-        break;
-    }
-
-    if (this->args.isSentWhisper)
-    {
-        // TODO(pajlada): Re-implement
-        // userDisplayString +=
-        // IrcManager::getInstance().getUser().getUserName();
-    }
-    else if (this->args.isReceivedWhisper)
-    {
-        // Sender username
-        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
-                                   this->usernameColor_,
-                                   FontStyle::ChatMediumBold)
-            ->setLink({Link::UserWhisper, this->message().displayName});
-
-        auto currentUser = app->accounts->twitch.getCurrent();
-
-        // Separator
-        this->emplace<TextElement>("->", MessageElementFlag::Username,
-                                   app->themes->messages.textColors.system,
-                                   FontStyle::ChatMedium);
-
-        QColor selfColor = currentUser->color();
-        if (!selfColor.isValid())
-        {
-            selfColor = app->themes->messages.textColors.system;
-        }
-
-        // Your own username
-        this->emplace<TextElement>(currentUser->getUserName() + ":",
-                                   MessageElementFlag::Username, selfColor,
-                                   FontStyle::ChatMediumBold);
-    }
-    else
-    {
-        if (!this->action_)
-        {
-            usernameText += ":";
-        }
-
-        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
-                                   this->usernameColor_,
-                                   FontStyle::ChatMediumBold)
-            ->setLink({Link::UserInfo, this->message().displayName});
-    }
-}
-
-void TwitchMessageBuilder::parseHighlights(bool isPastMsg)
-{
-    static auto player = new QMediaPlayer;
-    static QUrl currentPlayerUrl;
-
     auto app = getApp();
 
     auto currentUser = app->accounts->twitch.getCurrent();
 
     QString currentUsername = currentUser->getUserName();
 
-    if (this->ircMessage->nick() == currentUsername)
+    if (app->highlights->blacklistContains(this->ircMessage->nick()))
     {
-        currentUser->setColor(this->usernameColor_);
-        // Do nothing. Highlights cannot be triggered by yourself
+        // Do nothing. We ignore highlights from this user.
         return;
     }
 
-    // update the media player url if necessary
-    QUrl highlightSoundUrl =
-        getSettings()->customHighlightSound
-            ? QUrl::fromLocalFile(getSettings()->pathHighlightSound.getValue())
-            : QUrl("qrc:/sounds/ping2.wav");
+    std::vector<HighlightPhrase> userHighlights =
+        app->highlights->highlightedUsers.cloneVector();
 
-    if (currentPlayerUrl != highlightSoundUrl)
+    // Highlight because of sender
+    for (const HighlightPhrase &userHighlight : userHighlights)
     {
-        player->setMedia(highlightSoundUrl);
+        if (!userHighlight.isMatch(this->ircMessage->nick()))
+        {
+            continue;
+        }
+        log("Highlight because user {} sent a message",
+            this->ircMessage->nick());
+        if (!this->highlightVisual_)
+        {
+            this->highlightVisual_ = true;
+            this->message().flags.set(MessageFlag::Highlighted);
+        }
 
-        currentPlayerUrl = highlightSoundUrl;
+        if (userHighlight.getAlert())
+        {
+            this->highlightAlert_ = true;
+        }
+
+        if (userHighlight.getSound())
+        {
+            this->highlightSound_ = true;
+        }
+
+        if (this->highlightAlert_ && this->highlightSound_)
+        {
+            // Break if no further action can be taken from other
+            // usernames Mostly used for regex stuff
+            break;
+        }
+    }
+
+    if (this->ircMessage->nick() == currentUsername)
+    {
+        // Do nothing. Highlights cannot be triggered by yourself
+        return;
     }
 
     // TODO: This vector should only be rebuilt upon highlights being changed
     // fourtf: should be implemented in the HighlightsController
     std::vector<HighlightPhrase> activeHighlights =
-        app->highlights->phrases.getVector();
-    std::vector<HighlightPhrase> userHighlights =
-        app->highlights->highlightedUsers.getVector();
+        app->highlights->phrases.cloneVector();
 
     if (getSettings()->enableSelfHighlight && currentUsername.size() > 0)
     {
@@ -816,97 +954,51 @@ void TwitchMessageBuilder::parseHighlights(bool isPastMsg)
         activeHighlights.emplace_back(std::move(selfHighlight));
     }
 
-    bool doHighlight = false;
-    bool playSound = false;
-    bool doAlert = false;
-
-    bool hasFocus = (QApplication::focusWidget() != nullptr);
-
-    if (!app->highlights->blacklistContains(this->ircMessage->nick()))
+    // Highlight because of message
+    for (const HighlightPhrase &highlight : activeHighlights)
     {
-        for (const HighlightPhrase &highlight : activeHighlights)
+        if (!highlight.isMatch(this->originalMessage_))
         {
-            if (highlight.isMatch(this->originalMessage_))
-            {
-                log("Highlight because {} matches {}", this->originalMessage_,
-                    highlight.getPattern());
-                doHighlight = true;
-
-                if (highlight.getAlert())
-                {
-                    doAlert = true;
-                }
-
-                if (highlight.getSound())
-                {
-                    playSound = true;
-                }
-
-                if (playSound && doAlert)
-                {
-                    // Break if no further action can be taken from other
-                    // highlights This might change if highlights can have
-                    // custom colors/sounds/actions
-                    break;
-                }
-            }
-        }
-        for (const HighlightPhrase &userHighlight : userHighlights)
-        {
-            if (userHighlight.isMatch(this->ircMessage->nick()))
-            {
-                log("Highlight because user {} sent a message",
-                    this->ircMessage->nick());
-                doHighlight = true;
-
-                if (userHighlight.getAlert())
-                {
-                    doAlert = true;
-                }
-
-                if (userHighlight.getSound())
-                {
-                    playSound = true;
-                }
-
-                if (playSound && doAlert)
-                {
-                    // Break if no further action can be taken from other
-                    // usernames Mostly used for regex stuff
-                    break;
-                }
-            }
-        }
-        if (this->args.isReceivedWhisper &&
-            getSettings()->enableWhisperHighlight)
-        {
-            if (getSettings()->enableWhisperHighlightTaskbar)
-            {
-                doAlert = true;
-            }
-            if (getSettings()->enableWhisperHighlightSound)
-            {
-                playSound = true;
-            }
+            continue;
         }
 
-        this->message().flags.set(MessageFlag::Highlighted, doHighlight);
-
-        if (!isPastMsg)
+        log("Highlight because {} matches {}", this->originalMessage_,
+            highlight.getPattern());
+        if (!this->highlightVisual_)
         {
-            bool notMuted = !getApp()->pings->isMuted(this->channel->getName());
-            bool resolveFocus =
-                !hasFocus || getSettings()->highlightAlwaysPlaySound;
+            this->highlightVisual_ = true;
+            this->message().flags.set(MessageFlag::Highlighted);
+        }
 
-            if (playSound && notMuted && resolveFocus)
-            {
-                player->play();
-            }
+        if (highlight.getAlert())
+        {
+            this->highlightAlert_ = true;
+        }
 
-            if (doAlert && notMuted)
-            {
-                getApp()->windows->sendAlert();
-            }
+        if (highlight.getSound())
+        {
+            this->highlightSound_ = true;
+        }
+
+        if (this->highlightAlert_ && this->highlightSound_)
+        {
+            // Break if no further action can be taken from other
+            // highlights This might change if highlights can have
+            // custom colors/sounds/actions
+            break;
+        }
+    }
+
+    // Highlight because it's a whisper
+    if (this->args.isReceivedWhisper && getSettings()->enableWhisperHighlight)
+    {
+        if (getSettings()->enableWhisperHighlightTaskbar)
+        {
+            this->highlightAlert_ = true;
+        }
+        if (getSettings()->enableWhisperHighlightSound)
+        {
+            this->highlightSound_ = true;
         }
     }
 }
@@ -942,8 +1034,8 @@ void TwitchMessageBuilder::appendTwitchEmote(
             return;
         }
 
-        auto start = correctPositions[coords.at(0).toInt()];
-        auto end = correctPositions[coords.at(1).toInt()];
+        auto start = correctPositions[coords.at(0).toUInt()];
+        auto end = correctPositions[coords.at(1).toUInt()];
 
         if (start >= end || start < 0 || end > this->originalMessage_.length())
         {
@@ -1193,7 +1285,7 @@ void TwitchMessageBuilder::appendChatterinoBadges()
     }
 }
 
-Outcome TwitchMessageBuilder::tryParseCheermote(const QString &string)
+Outcome TwitchMessageBuilder::tryParseCheermote(const QString & /*string*/)
 {
     // auto app = getApp();
     //// Try to parse custom cheermotes

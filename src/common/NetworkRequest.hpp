@@ -6,6 +6,8 @@
 #include "common/NetworkTimer.hpp"
 #include "common/NetworkWorker.hpp"
 
+#include <memory>
+
 namespace chatterino {
 
 struct NetworkData;
@@ -57,9 +59,11 @@ public:
 
     void execute();
 
-    QString urlString() const;
+    [[nodiscard]] QString urlString() const;
 
 private:
+    void initializeDefaultValues();
+
     // "invalid" data "invalid" is specified by the onSuccess callback
     Outcome tryLoadCachedFile();
 

@@ -192,8 +192,8 @@ void SplitInput::installKeyPressedEvent()
 
             QString message = ui_.textEdit->toPlainText();
 
+            message = message.replace('\n', ' ');
             QString sendMessage = app->commands->execCommand(message, c, false);
-            sendMessage = sendMessage.replace('\n', ' ');
 
             c->sendMessage(sendMessage);
             // don't add duplicate messages and empty message to message history
@@ -398,32 +398,6 @@ void SplitInput::installKeyPressedEvent()
                 {
                     page->selectNextSplit(SplitContainer::Right);
                 }
-            }
-        }
-        else if (event->key() == Qt::Key_Tab)
-        {
-            if (event->modifiers() == Qt::ControlModifier)
-            {
-                SplitContainer *page =
-                    static_cast<SplitContainer *>(this->split_->parentWidget());
-
-                Notebook *notebook =
-                    static_cast<Notebook *>(page->parentWidget());
-
-                notebook->selectNextTab();
-            }
-        }
-        else if (event->key() == Qt::Key_Backtab)
-        {
-            if (event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier))
-            {
-                SplitContainer *page =
-                    static_cast<SplitContainer *>(this->split_->parentWidget());
-
-                Notebook *notebook =
-                    static_cast<Notebook *>(page->parentWidget());
-
-                notebook->selectPreviousTab();
             }
         }
         else if (event->key() == Qt::Key_C &&

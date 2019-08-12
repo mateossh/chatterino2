@@ -176,9 +176,7 @@ void SplitHeader::initializeLayout()
                     switch (button)
                     {
                         case Qt::LeftButton:
-                            if (getApp()
-                                    ->moderationActions->items.getVector()
-                                    .empty())
+                            if (getApp()->moderationActions->items.empty())
                             {
                                 getApp()->windows->showSettingsDialog(
                                     SettingsDialogPreference::
@@ -222,19 +220,19 @@ void SplitHeader::initializeLayout()
     });
 
     // update moderation button when items changed
-    this->managedConnect(
-        getApp()->moderationActions->items.delayedItemsChanged, [this] {
-            if (getApp()->moderationActions->items.getVector().empty())
-            {
-                if (this->split_->getModerationMode())
-                    this->split_->setModerationMode(true);
-            }
-            else
-            {
-                if (this->split_->getModerationMode())
-                    this->split_->setModerationMode(true);
-            }
-        });
+    this->managedConnect(getApp()->moderationActions->items.delayedItemsChanged,
+                         [this] {
+                             if (getApp()->moderationActions->items.empty())
+                             {
+                                 if (this->split_->getModerationMode())
+                                     this->split_->setModerationMode(true);
+                             }
+                             else
+                             {
+                                 if (this->split_->getModerationMode())
+                                     this->split_->setModerationMode(true);
+                             }
+                         });
 
     layout->setMargin(0);
     layout->setSpacing(0);
@@ -251,9 +249,6 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
                     QKeySequence("Ctrl+R"));
     menu->addAction("Close", this->split_, &Split::deleteFromContainer,
                     QKeySequence("Ctrl+W"));
-    menu->addSeparator();
-    menu->addAction("How to move", this->split_, &Split::explainMoving);
-    menu->addAction("How to add/split", this->split_, &Split::explainSplitting);
     menu->addSeparator();
     menu->addAction("Popup", this->split_, &Split::popup);
     menu->addAction("Search", this->split_, &Split::showSearch,
@@ -281,6 +276,14 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
 #endif
     menu->addAction(OPEN_IN_STREAMLINK, this->split_, &Split::openInStreamlink);
     menu->addSeparator();
+
+    {
+        // "How to..." sub menu
+        auto subMenu = new QMenu("How to...", this);
+        subMenu->addAction("move split", this->split_, &Split::explainMoving);
+        subMenu->addAction("add/split", this->split_, &Split::explainSplitting);
+        menu->addMenu(subMenu);
+    }
 
     // sub menu
     auto moreMenu = new QMenu("More", this);
@@ -502,9 +505,8 @@ void SplitHeader::updateChannelText()
 
 void SplitHeader::updateModerationModeIcon()
 {
-    auto moderationMode =
-        this->split_->getModerationMode() &&
-        !getApp()->moderationActions->items.getVector().empty();
+    auto moderationMode = this->split_->getModerationMode() &&
+                          !getApp()->moderationActions->items.empty();
 
     this->moderationButton_->setPixmap(
         moderationMode ? getApp()->resources->buttons.modModeEnabled

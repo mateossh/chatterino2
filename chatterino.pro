@@ -19,6 +19,13 @@ useBreakpad {
     DEFINES += C_USE_BREAKPAD
 }
 
+# use C++17
+win32-msvc* {
+    QMAKE_CXXFLAGS += /std:c++17
+} else {
+    QMAKE_CXXFLAGS += -std=c++17
+}
+
 # https://bugreports.qt.io/browse/QTBUG-27018
 equals(QMAKE_CXX, "clang++")|equals(QMAKE_CXX, "g++") {
     TARGET = bin/chatterino
@@ -33,13 +40,31 @@ macx {
 }
 
 # Submodules
-include(lib/appbase.pri)
-include(lib/humanize.pri)
 DEFINES += IRC_NAMESPACE=Communi
+
+include(lib/warnings.pri)
+include(lib/appbase.pri)
+include(lib/fmt.pri)
+include(lib/humanize.pri)
 include(lib/libcommuni.pri)
 include(lib/websocketpp.pri)
-include(lib/openssl.pri)
 include(lib/wintoast.pri)
+include(lib/signals.pri)
+include(lib/settings.pri)
+include(lib/serialize.pri)
+include(lib/winsdk.pri)
+include(lib/rapidjson.pri)
+
+exists( $$OUT_PWD/conanbuildinfo.pri ) {
+    message("Using conan packages")
+    CONFIG += conan_basic_setup
+    include($$OUT_PWD/conanbuildinfo.pri)
+    LIBS += -lGdi32
+}
+else{
+    include(lib/boost.pri)
+    include(lib/openssl.pri)
+}
 
 # Optional feature: QtWebEngine
 #exists ($(QTDIR)/include/QtWebEngine/QtWebEngine) {
@@ -422,3 +447,20 @@ linux {
 
     INSTALLS += desktop build_icons icon target
 }
+
+git_commit=$$(GIT_COMMIT)
+git_release=$$(GIT_RELEASE)
+# Git data
+isEmpty(git_commit) {
+git_commit=$$system(git rev-parse HEAD)
+}
+isEmpty(git_release) {
+git_release=$$system(git describe)
+}
+git_hash = $$str_member($$git_commit, 0, 8)
+
+# Passing strings as defines requires you to use this weird triple-escape then quotation mark syntax.
+# https://stackoverflow.com/questions/3348711/add-a-define-to-qmake-with-a-value/18343449#18343449
+DEFINES += CHATTERINO_GIT_COMMIT=\\\"$$git_commit\\\"
+DEFINES += CHATTERINO_GIT_RELEASE=\\\"$$git_release\\\"
+DEFINES += CHATTERINO_GIT_HASH=\\\"$$git_hash\\\"

@@ -2,6 +2,7 @@
 
 #include "BaseSettings.hpp"
 
+#include "common/Channel.hpp"
 #include "controllers/highlights/HighlightPhrase.hpp"
 #include "controllers/moderationactions/ModerationAction.hpp"
 #include "singletons/Toasts.hpp"
@@ -41,6 +42,8 @@ public:
     BoolSetting hideModerated = {"/appearance/messages/hideModerated", false};
     BoolSetting hideModerationActions = {
         "/appearance/messages/hideModerationActions", false};
+    BoolSetting colorizeNicknames = {
+        "/appearance/messages/colorizeNicknames", false};
 
     //    BoolSetting collapseLongMessages =
     //    {"/appearance/messages/collapseLongMessages", false};
@@ -48,7 +51,7 @@ public:
         "/appearance/messages/collapseMessagesMinLines", 0};
     BoolSetting alternateMessages = {
         "/appearance/messages/alternateMessageBackground", false};
-    FloatSetting boldScale = {"/appearance/boldScale", 50};
+    FloatSetting boldScale = {"/appearance/boldScale", 63};
     BoolSetting showTabCloseButton = {"/appearance/showTabCloseButton", true};
     BoolSetting showTabLive = {"/appearance/showTabLiveButton", false};
     BoolSetting hidePreferencesButton = {"/appearance/hidePreferencesButton",
@@ -98,6 +101,7 @@ public:
         "/behaviour/autocompletion/smallStreamerLimit", 1000};
 
     BoolSetting pauseChatOnHover = {"/behaviour/pauseChatHover", false};
+    BoolSetting autorun = {"/behaviour/autorun", false};
 
     /// Commands
     BoolSetting allowCommandsAtEnd = {"/commands/allowCommandsAtEnd", false};
@@ -128,6 +132,9 @@ public:
 
     /// Moderation
     QStringSetting timeoutAction = {"/moderation/timeoutAction", "Disable"};
+    IntSetting timeoutStackStyle = {
+        "/moderation/timeoutStackStyle",
+        static_cast<int>(TimeoutStackStyle::Default)};
 
     /// Highlighting
     //    BoolSetting enableHighlights = {"/highlighting/enabled", true};

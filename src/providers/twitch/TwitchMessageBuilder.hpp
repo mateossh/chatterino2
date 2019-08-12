@@ -43,16 +43,22 @@ public:
 
     QString userName;
 
-    bool isIgnored() const;
+    [[nodiscard]] bool isIgnored() const;
+    // triggerHighlights triggers any alerts or sounds parsed by parseHighlights
+    void triggerHighlights();
     MessagePtr build();
 
 private:
     void parseMessageID();
     void parseRoomID();
     void appendChannelName();
+    void parseUsernameColor();
     void parseUsername();
     void appendUsername();
-    void parseHighlights(bool isPastMsg);
+    void runIgnoreReplaces(
+        std::vector<std::tuple<int, EmotePtr, EmoteName>> &twitchEmotes);
+    // parseHighlights only updates the visual state of the message, but leaves the playing of alerts and sounds to the triggerHighlights function
+    void parseHighlights();
 
     void appendTwitchEmote(
         const QString &emote,
@@ -72,12 +78,17 @@ private:
 
     QString roomID_;
     bool hasBits_ = false;
+    bool historicalMessage_ = false;
 
     QColor usernameColor_;
     QString originalMessage_;
     bool senderIsBroadcaster{};
 
     const bool action_ = false;
+
+    bool highlightVisual_ = false;
+    bool highlightAlert_ = false;
+    bool highlightSound_ = false;
 };
 
 }  // namespace chatterino

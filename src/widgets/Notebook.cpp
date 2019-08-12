@@ -34,14 +34,6 @@ Notebook::Notebook(QWidget *parent)
     this->addButton_->setIcon(NotebookButton::Icon::Plus);
 
     this->addButton_->setHidden(true);
-
-    auto *shortcut_next = new QShortcut(QKeySequence("Ctrl+Tab"), this);
-    QObject::connect(shortcut_next, &QShortcut::activated,
-                     [this] { this->selectNextTab(); });
-
-    auto *shortcut_prev = new QShortcut(QKeySequence("Ctrl+Shift+Tab"), this);
-    QObject::connect(shortcut_prev, &QShortcut::activated,
-                     [this] { this->selectPreviousTab(); });
 }
 
 NotebookTab *Notebook::addPage(QWidget *page, QString title, bool select)
@@ -254,6 +246,17 @@ void Notebook::selectPreviousTab()
     }
 
     this->select(this->items_[index].page);
+}
+
+void Notebook::selectLastTab()
+{
+    const auto size = this->items_.size();
+    if (size <= 1)
+    {
+        return;
+    }
+
+    this->select(this->items_[size - 1].page);
 }
 
 int Notebook::getPageCount() const
